@@ -170,12 +170,12 @@ with tab_ops:
         
         # Address & Geocode Search
         search_addr = st.text_input("Property Address:", value=st.session_state.target_address)
-        if st.button("📍 Geocode & Center Address"):
-            new_lat, new_lon = geocode_address(search_addr)
-            st.session_state.marker_lat = new_lat
-            st.session_state.marker_lon = new_lon
-            st.session_state.target_address = search_addr
-            st.rerun()
+        # if st.button("📍 Geocode & Center Address"):
+        #     new_lat, new_lon = geocode_address(search_addr)
+        #     st.session_state.marker_lat = new_lat
+        #     st.session_state.marker_lon = new_lon
+        #     st.session_state.target_address = search_addr
+        #     st.rerun()
 
         # Map display with styled hover tooltip
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
