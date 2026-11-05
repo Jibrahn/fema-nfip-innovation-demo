@@ -31,38 +31,3 @@ An end-to-end prototype built for the **FEMA Innovation Branch**, demonstrating 
       ┌───────┴───────────────────┐
       ▼                           ▼
 [ Tier 1: Auto-Bind ]    [ Tier 2/3: Mandatory HITL Underwriter Queue ]
-```
-
----
-
-## Rapid Local Setup
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/fema-nfip-innovation-demo.git
-   cd fema-nfip-innovation-demo
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Run automated test suite:**
-   ```bash
-   pytest tests/
-   ```
-
-4. **Launch Streamlit Web App:**
-   ```bash
-   streamlit run app.py
-   ```
-
----
-
-## Deployment to Streamlit Cloud (Free & Instant)
-
-1. Push this repository to GitHub.
-2. Sign in to [Streamlit Community Cloud](https://share.streamlit.io/).
-3. Click **New app**, select this repository and `app.py`, and click **Deploy**.
-4. You will receive a permanent, public HTTPS link (e.g., `https://share.streamlit.io/YOUR_USERNAME/fema-nfip-innovation-demo`) ready to submit with your application.
