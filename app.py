@@ -46,7 +46,7 @@ def geocode_address(address_str: str) -> Tuple[float, float]:
 
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
     """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)[cite: 4]."""
-    url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
+    url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"[cite: 4]
     params = {
         "geometry": f"{lon},{lat}",
         "geometryType": "esriGeometryPoint",
@@ -54,17 +54,17 @@ def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
         "outFields": "FLD_ZONE,ZONE_SUBTY,SFHA_TF",
         "returnGeometry": "false",
         "f": "json"
-    }
+    }[cite: 4]
     try:
-        resp = requests.get(url, params=params, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("features"):
-                attr = data["features"][0].get("attributes", {})
-                zone = attr.get("FLD_ZONE", "X")
+        resp = requests.get(url, params=params, timeout=5)[cite: 4]
+        if resp.status_code == 200:[cite: 4]
+            data = resp.json()[cite: 4]
+            if data.get("features"):[cite: 4]
+                attr = data["features"][0].get("attributes", {})[cite: 4]
+                zone = attr.get("FLD_ZONE", "X")[cite: 4]
                 subtype = attr.get("ZONE_SUBTY", "Area of Minimal Flood Hazard")
                 return zone, subtype, data
-        return "X", "Standard / Area of Minimal Flood Hazard", {"status": "default_fallback"}
+        return "X", "Standard / Area of Minimal Flood Hazard", {"status": "default_fallback"}[cite: 4]
     except Exception as e:
         return "AE", "1% Annual Chance Flood Hazard (Offline Simulation)", {"error": str(e)}
 
@@ -75,8 +75,8 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int, founda
     elev_diff = lag - bfe
     flags = []
     
-    sfha_zones = ["A", "AE", "AH", "AO", "AR", "A99", "V", "VE"]
-    is_sfha = any(zone.upper().startswith(z) for z in sfha_zones)
+    sfha_zones = ["A", "AE", "AH", "AO", "AR", "A99", "V", "VE"][cite: 4]
+    is_sfha = any(zone.upper().startswith(z) for z in sfha_zones)[cite: 4]
     
     if is_sfha:
         flags.append(f"Structure located in Special Flood Hazard Area (SFHA Zone {zone})")
@@ -177,47 +177,48 @@ with tab_ops:
             st.session_state.target_address = search_addr
             st.rerun()
 
-        st.caption("💡 *Hover over the pin to inspect metadata, or click anywhere on the map to relocate:*")
-        
-        # Map with rich HTML hover tooltip and popup
+        # Map display with styled hover tooltip (text wrapped, constrained, pan/zoom enabled)
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
         
         tooltip_html = f"""
-        <div style="font-family: sans-serif; font-size: 12px; width: 200px;">
-            <b style="color: #0b5394;">Target Property Inspection</b><br/>
-            <b>Address:</b> {st.session_state.target_address}<br/>
-            <b>Coordinates:</b> {st.session_state.marker_lat:.4f}, {st.session_state.marker_lon:.4f}<br/>
-            <span style="color: gray; font-size: 10px;">Click map to relocate marker</span>
-        </div>
-        """
-        popup_html = f"""
-        <div style="font-family: sans-serif; font-size: 12px;">
-            <b>Selected Structure:</b><br/>{st.session_state.target_address}<br/><br/>
-            <b>Lat:</b> {st.session_state.marker_lat:.4f} | <b>Lon:</b> {st.session_state.marker_lon:.4f}
+        <div style="
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-size: 12px;
+            line-height: 1.4;
+            max-width: 240px;
+            padding: 4px;
+            white-space: normal;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        ">
+            <span style="font-weight: 700; color: #0b5394; display: block; margin-bottom: 4px;">Target Property</span>
+            <span style="font-weight: 600; color: #222;">Address:</span> {st.session_state.target_address}<br/>
+            <span style="font-weight: 600; color: #222;">Coordinates:</span> {st.session_state.marker_lat:.4f}, {st.session_state.marker_lon:.4f}
         </div>
         """
         
         folium.Marker(
             [st.session_state.marker_lat, st.session_state.marker_lon],
             tooltip=folium.Tooltip(tooltip_html, sticky=True),
-            popup=folium.Popup(popup_html, max_width=250),
             icon=folium.Icon(color="red", icon="home", prefix="fa")
         ).add_to(m)
         
-        map_interaction = st_folium(m, height=270, use_container_width=True)
-        
-        # Detect clicks on map
-        if map_interaction and map_interaction.get("last_clicked"):
-            click_lat = round(map_interaction["last_clicked"]["lat"], 4)
-            click_lon = round(map_interaction["last_clicked"]["lng"], 4)
-            if click_lat != st.session_state.marker_lat or click_lon != st.session_state.marker_lon:
-                st.session_state.marker_lat = click_lat
-                st.session_state.marker_lon = click_lon
-                st.rerun()
+        # Render map strictly for visual context (clicks disabled from triggering reruns)
+        st_folium(
+            m,
+            height=280,
+            use_container_width=True,
+            returned_objects=[]  # Prevents Streamlit from triggering click-reruns or flashing
+        )
 
         c_lat, c_lon = st.columns(2)
-        c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f", key="manual_lat")
-        c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f", key="manual_lon")
+        manual_lat = c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f")
+        manual_lon = c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f")
+        
+        # Synchronize manual coordinate changes without flashing
+        if manual_lat != st.session_state.marker_lat or manual_lon != st.session_state.marker_lon:
+            st.session_state.marker_lat = manual_lat
+            st.session_state.marker_lon = manual_lon
 
         st.markdown("#### Building & Elevation Certificate Details")
         c1, c2 = st.columns(2)
@@ -241,7 +242,6 @@ with tab_ops:
                 rules = evaluate_underwriting(zone, bfe, lag, claims, foundation, occupancy)
                 memo = generate_agentic_memo("NFIP-APP-2026-8842", search_addr, zone, subtype, rules, foundation, occupancy)
                 
-                # Cache results in session state so interaction buttons do not clear them
                 st.session_state.last_triage_result = {
                     "app_id": "NFIP-APP-2026-8842",
                     "address": search_addr,
@@ -259,7 +259,6 @@ with tab_ops:
                     }
                 }
 
-        # Render cached or active triage result
         if st.session_state.last_triage_result:
             res = st.session_state.last_triage_result
             rules = res["rules"]
@@ -273,7 +272,6 @@ with tab_ops:
 
             st.markdown(res["memo"])
 
-            # Human-in-the-Loop Sign-off Form
             st.markdown("---")
             st.subheader("3. Underwriter Human-in-the-Loop (HITL) Sign-off")
             notes = st.text_area("Underwriter Justification & Review Notes:", placeholder="Document verification of Elevation Certificate, surveyor notes, or mitigation...")
@@ -308,7 +306,7 @@ with tab_ops:
                     st.session_state.audit_log.insert(0, new_entry)
                     st.warning("⚠️ Application escalated to Regional Engineering Survey. Appended to Audit Log!")
         else:
-            st.info("Enter an address or click on the map, then select **Run Automated Underwriting Triage** to execute.")
+            st.info("Enter an address or coordinate set on the left, then click **Run Automated Underwriting Triage** to evaluate.")
 
 with tab_connectors:
     st.subheader("Power Platform & Enterprise Low-Code Hand-Off")
@@ -350,7 +348,6 @@ with tab_governance:
         df_log = pd.DataFrame(st.session_state.audit_log)
         st.dataframe(df_log, use_container_width=True)
         
-        # Download audit log button
         csv_data = df_log.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Audit Trail (CSV)",
