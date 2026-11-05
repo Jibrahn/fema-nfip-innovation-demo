@@ -211,12 +211,12 @@ with tab_ops:
         )
 
         c_lat, c_lon = st.columns(2)
-        manual_lat = c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f")
-        manual_lon = c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f")
+        # manual_lat = c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f")
+        # manual_lon = c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f")
         
-        if manual_lat != st.session_state.marker_lat or manual_lon != st.session_state.marker_lon:
-            st.session_state.marker_lat = manual_lat
-            st.session_state.marker_lon = manual_lon
+        # if manual_lat != st.session_state.marker_lat or manual_lon != st.session_state.marker_lon:
+        #     st.session_state.marker_lat = manual_lat
+        #     st.session_state.marker_lon = manual_lon
 
         st.markdown("#### Building & Elevation Certificate Details")
         c1, c2 = st.columns(2)
