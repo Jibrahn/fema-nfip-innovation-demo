@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import json
-import urllib.parse
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, Tuple
@@ -31,49 +30,53 @@ if "last_triage_result" not in st.session_state:
     st.session_state.last_triage_result = None
 
 # -----------------------------------------------------------------------------
-# GEOCODING ENGINE: US CENSUS BUREAU + NOMINATIM FALLBACK
+# GEOCODING ENGINE: ARCGIS WORLD GEOCODER + NOMINATIM FALLBACK
 # -----------------------------------------------------------------------------
 def geocode_address(address_str: str) -> Tuple[float, float, bool, str]:
     """
-    Geocodes text address using federal US Census Bureau API with Nominatim fallback.
+    Geocodes text address using ArcGIS World Geocoding Service (Esri) with Nominatim fallback.
+    Handles partial streets, full addresses, commas, and ZIP codes.
     Returns: (lat, lon, success_bool, status_message)
     """
     clean_addr = address_str.strip()
     if not clean_addr:
         return st.session_state.marker_lat, st.session_state.marker_lon, False, "Address input cannot be blank."
 
-    # 1. Primary Federal Geocoder: US Census Bureau (Best for formatted US addresses)
+    # 1. Primary Engine: ArcGIS World Geocoding (Esri - native NFIP/FEMA geospatial ecosystem)
     try:
-        census_url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+        esri_url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
         params = {
-            "address": clean_addr,
-            "benchmark": "Public_AR_Current",
-            "format": "json"
+            "SingleLine": clean_addr,
+            "f": "json",
+            "maxLocations": 1,
+            "outFields": "Match_addr,Addr_type"
         }
-        resp = requests.get(census_url, params=params, timeout=5)
+        resp = requests.get(esri_url, params=params, timeout=6)
         if resp.status_code == 200:
-            matches = resp.json().get("result", {}).get("addressMatches", [])
-            if matches:
-                coords = matches[0]["coordinates"]
-                return float(coords["y"]), float(coords["x"]), True, "Successfully matched via US Census Bureau Geocoding Service."
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                loc = candidates[0].get("location", {})
+                matched_label = candidates[0].get("address", clean_addr)
+                return float(loc["y"]), float(loc["x"]), True, f"Matched: {matched_label}"
     except Exception:
         pass
 
-    # 2. Secondary Geocoder: OpenStreetMap Nominatim
+    # 2. Secondary Engine: OpenStreetMap Nominatim
     try:
         nom_url = "https://nominatim.openstreetmap.org/search"
-        headers = {"User-Agent": "FEMA-NFIP-Innovation-Triage-App/2.1 (contact: fema-demo@dhs.gov)"}
-        params = {"q": clean_addr, "format": "json", "limit": 1, "countrycodes": "us"}
-        resp = requests.get(nom_url, params=params, headers=headers, timeout=5)
-        if resp.status_code == 200 and resp.json():
-            item = resp.json()[0]
-            return float(item["lat"]), float(item["lon"]), True, "Successfully matched via OpenStreetMap Geocoding Service."
-    except Exception as e:
-        return st.session_state.marker_lat, st.session_state.marker_lon, False, f"Geocoding service error: {str(e)}"
+        headers = {"User-Agent": "FEMA-NFIP-Innovation-Triage-App/2.2"}
+        params = {"q": clean_addr, "format": "json", "limit": 1}
+        resp = requests.get(nom_url, params=params, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            items = resp.json()
+            if items:
+                return float(items[0]["lat"]), float(items[0]["lon"]), True, f"Matched: {items[0].get('display_name', clean_addr)}"
+    except Exception:
+        pass
 
     return st.session_state.marker_lat, st.session_state.marker_lon, False, (
-        f"Unable to locate '{clean_addr}'. Please verify the format: "
-        "'123 Main St, City, ST 12345'."
+        f"Unable to locate '{clean_addr}'. Please check spelling or add city/state."
     )
 
 def on_address_change():
@@ -217,7 +220,6 @@ with tab_ops:
     with col_input:
         st.subheader("1. Property Geospatial & Building Intake")
         
-        # Address input with explicit format guidance
         st.text_input(
             "Property Address (Street, City, State ZIP):",
             value=st.session_state.target_address,
@@ -225,13 +227,11 @@ with tab_ops:
             on_change=on_address_change,
             placeholder="e.g., 100 Main St, Lumberton, NC 28358"
         )
-        st.caption("💡 *Type a standard US street address, city, state, and ZIP, then press **Enter** to update coordinates.*")
+        st.caption("💡 *Type any US address, partial street, or city/state, then press **Enter**.*")
 
-        # Explicit Geocoding Error Banner
         if st.session_state.geocode_error:
             st.error(f"⚠️ {st.session_state.geocode_error}")
 
-        # Dynamic folium map forced to re-render when marker coordinates update
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
         
         tooltip_html = f"""
