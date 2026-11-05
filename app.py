@@ -309,7 +309,6 @@ with tab_ops:
 with tab_connectors:
     st.subheader("Power Platform & Enterprise Low-Code Hand-Off")
     st.markdown("""
-    This microservice directly fulfills the job requirement to **support workflow logic, automation, and technical hand-off materials for engineering teams**.
     Below is the normalized JSON schema exported by this prototype to trigger flows in **Microsoft Power Automate**, **DHSChat**, or a **GCP Cloud Function**:
     """)
     current_res = st.session_state.last_triage_result
