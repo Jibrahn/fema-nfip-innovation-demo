@@ -45,8 +45,8 @@ def geocode_address(address_str: str) -> Tuple[float, float]:
     return st.session_state.marker_lat, st.session_state.marker_lon
 
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
-    """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)[cite: 4]."""
-    url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"[cite: 4]
+    """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
+    url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
     params = {
         "geometry": f"{lon},{lat}",
         "geometryType": "esriGeometryPoint",
@@ -54,17 +54,17 @@ def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
         "outFields": "FLD_ZONE,ZONE_SUBTY,SFHA_TF",
         "returnGeometry": "false",
         "f": "json"
-    }[cite: 4]
+    }
     try:
-        resp = requests.get(url, params=params, timeout=5)[cite: 4]
-        if resp.status_code == 200:[cite: 4]
-            data = resp.json()[cite: 4]
-            if data.get("features"):[cite: 4]
-                attr = data["features"][0].get("attributes", {})[cite: 4]
-                zone = attr.get("FLD_ZONE", "X")[cite: 4]
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("features"):
+                attr = data["features"][0].get("attributes", {})
+                zone = attr.get("FLD_ZONE", "X")
                 subtype = attr.get("ZONE_SUBTY", "Area of Minimal Flood Hazard")
                 return zone, subtype, data
-        return "X", "Standard / Area of Minimal Flood Hazard", {"status": "default_fallback"}[cite: 4]
+        return "X", "Standard / Area of Minimal Flood Hazard", {"status": "default_fallback"}
     except Exception as e:
         return "AE", "1% Annual Chance Flood Hazard (Offline Simulation)", {"error": str(e)}
 
@@ -75,8 +75,8 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int, founda
     elev_diff = lag - bfe
     flags = []
     
-    sfha_zones = ["A", "AE", "AH", "AO", "AR", "A99", "V", "VE"][cite: 4]
-    is_sfha = any(zone.upper().startswith(z) for z in sfha_zones)[cite: 4]
+    sfha_zones = ["A", "AE", "AH", "AO", "AR", "A99", "V", "VE"]
+    is_sfha = any(zone.upper().startswith(z) for z in sfha_zones)
     
     if is_sfha:
         flags.append(f"Structure located in Special Flood Hazard Area (SFHA Zone {zone})")
@@ -177,7 +177,7 @@ with tab_ops:
             st.session_state.target_address = search_addr
             st.rerun()
 
-        # Map display with styled hover tooltip (text wrapped, constrained, pan/zoom enabled)
+        # Map display with styled hover tooltip
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
         
         tooltip_html = f"""
@@ -203,19 +203,17 @@ with tab_ops:
             icon=folium.Icon(color="red", icon="home", prefix="fa")
         ).add_to(m)
         
-        # Render map strictly for visual context (clicks disabled from triggering reruns)
         st_folium(
             m,
             height=280,
             use_container_width=True,
-            returned_objects=[]  # Prevents Streamlit from triggering click-reruns or flashing
+            returned_objects=[]
         )
 
         c_lat, c_lon = st.columns(2)
         manual_lat = c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f")
         manual_lon = c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f")
         
-        # Synchronize manual coordinate changes without flashing
         if manual_lat != st.session_state.marker_lat or manual_lon != st.session_state.marker_lon:
             st.session_state.marker_lat = manual_lat
             st.session_state.marker_lon = manual_lon
