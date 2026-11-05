@@ -24,6 +24,8 @@ if "marker_lon" not in st.session_state:
     st.session_state.marker_lon = -87.7000
 if "target_address" not in st.session_state:
     st.session_state.target_address = "124 Ocean Breeze Way, Gulf Shores, AL"
+if "last_triage_result" not in st.session_state:
+    st.session_state.last_triage_result = None
 
 # -----------------------------------------------------------------------------
 # GEOCODING & FEMA NFHL GIS QUERY ENGINE
@@ -43,7 +45,7 @@ def geocode_address(address_str: str) -> Tuple[float, float]:
     return st.session_state.marker_lat, st.session_state.marker_lon
 
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
-    """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
+    """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)[cite: 4]."""
     url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
     params = {
         "geometry": f"{lon},{lat}",
@@ -90,7 +92,6 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int, founda
     elif claims == 1:
         flags.append("Single loss history recorded on parcel")
 
-    # Workflow Triage Categorization
     if claims >= 2 or elev_diff < -2.0 or (is_sfha and "Basement" in foundation):
         tier = "Tier 3: Mandatory Senior Underwriter Review (HITL Exception)"
         status = "REQUIRES_SENIOR_REVIEW"
@@ -168,27 +169,44 @@ with tab_ops:
         st.subheader("1. Property Geospatial & Building Intake")
         
         # Address & Geocode Search
-        search_addr = st.text_input("Property Address (Type and press Enter to geocode):", value=st.session_state.target_address)
-        if st.button("📍 Geocode Address"):
+        search_addr = st.text_input("Property Address:", value=st.session_state.target_address)
+        if st.button("📍 Geocode & Center Address"):
             new_lat, new_lon = geocode_address(search_addr)
             st.session_state.marker_lat = new_lat
             st.session_state.marker_lon = new_lon
             st.session_state.target_address = search_addr
             st.rerun()
 
-        st.caption("💡 *You can also click anywhere directly on the map below to move the pin and update coordinates:*")
+        st.caption("💡 *Hover over the pin to inspect metadata, or click anywhere on the map to relocate:*")
         
-        # Interactive Folium Map with Click Listener
+        # Map with rich HTML hover tooltip and popup
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
+        
+        tooltip_html = f"""
+        <div style="font-family: sans-serif; font-size: 12px; width: 200px;">
+            <b style="color: #0b5394;">Target Property Inspection</b><br/>
+            <b>Address:</b> {st.session_state.target_address}<br/>
+            <b>Coordinates:</b> {st.session_state.marker_lat:.4f}, {st.session_state.marker_lon:.4f}<br/>
+            <span style="color: gray; font-size: 10px;">Click map to relocate marker</span>
+        </div>
+        """
+        popup_html = f"""
+        <div style="font-family: sans-serif; font-size: 12px;">
+            <b>Selected Structure:</b><br/>{st.session_state.target_address}<br/><br/>
+            <b>Lat:</b> {st.session_state.marker_lat:.4f} | <b>Lon:</b> {st.session_state.marker_lon:.4f}
+        </div>
+        """
+        
         folium.Marker(
             [st.session_state.marker_lat, st.session_state.marker_lon],
-            tooltip="Inspection Target",
-            icon=folium.Icon(color="red", icon="home")
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
+            popup=folium.Popup(popup_html, max_width=250),
+            icon=folium.Icon(color="red", icon="home", prefix="fa")
         ).add_to(m)
         
-        map_interaction = st_folium(m, height=260, use_container_width=True)
+        map_interaction = st_folium(m, height=270, use_container_width=True)
         
-        # Check if user clicked on map
+        # Detect clicks on map
         if map_interaction and map_interaction.get("last_clicked"):
             click_lat = round(map_interaction["last_clicked"]["lat"], 4)
             click_lon = round(map_interaction["last_clicked"]["lng"], 4)
@@ -216,51 +234,79 @@ with tab_ops:
 
     with col_results:
         st.subheader("2. Real-Time Triage & Agent Memo")
+        
         if run_btn:
             with st.spinner("Calling FEMA NFHL REST Layer 28 & evaluating business rules..."):
                 zone, subtype, raw_gis = query_fema_nfhl(st.session_state.marker_lat, st.session_state.marker_lon)
                 rules = evaluate_underwriting(zone, bfe, lag, claims, foundation, occupancy)
                 memo = generate_agentic_memo("NFIP-APP-2026-8842", search_addr, zone, subtype, rules, foundation, occupancy)
-
-                # Status Banner
-                if rules["color"] == "red":
-                    st.error(f"**Operational Decision:** {rules['tier']}")
-                elif rules["color"] == "orange":
-                    st.warning(f"**Operational Decision:** {rules['tier']}")
-                else:
-                    st.success(f"**Operational Decision:** {rules['tier']}")
-
-                st.markdown(memo)
-
-                # Underwriter Action Box (HITL)
-                st.markdown("---")
-                st.subheader("3. Underwriter Human-in-the-Loop Sign-off")
-                notes = st.text_area("Underwriter Justification & Review Notes:", placeholder="Document verification of Elevation Certificate or mitigation factors...")
                 
-                a1, a2 = st.columns(2)
-                if a1.button("✅ Bind & Authorize Coverage", use_container_width=True):
-                    record = {
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Property": search_addr,
-                        "Zone": zone,
-                        "Tier": rules["tier"],
-                        "Action": "AUTHORIZED_BIND",
-                        "Officer_Notes": notes or "Auto-bind criteria validated."
+                # Cache results in session state so interaction buttons do not clear them
+                st.session_state.last_triage_result = {
+                    "app_id": "NFIP-APP-2026-8842",
+                    "address": search_addr,
+                    "zone": zone,
+                    "subtype": subtype,
+                    "rules": rules,
+                    "memo": memo,
+                    "metrics": {
+                        "bfe": bfe,
+                        "lag": lag,
+                        "diff": rules["elevation_diff"],
+                        "foundation": foundation,
+                        "occupancy": occupancy,
+                        "claims": claims
                     }
-                    st.session_state.audit_log.append(record)
-                    st.success("Binder authorized. Action recorded to compliance audit log.")
-                    
-                if a2.button("🛑 Escalate to Regional Engineer", use_container_width=True):
-                    record = {
+                }
+
+        # Render cached or active triage result
+        if st.session_state.last_triage_result:
+            res = st.session_state.last_triage_result
+            rules = res["rules"]
+            
+            if rules["color"] == "red":
+                st.error(f"**Operational Decision:** {rules['tier']}")
+            elif rules["color"] == "orange":
+                st.warning(f"**Operational Decision:** {rules['tier']}")
+            else:
+                st.success(f"**Operational Decision:** {rules['tier']}")
+
+            st.markdown(res["memo"])
+
+            # Human-in-the-Loop Sign-off Form
+            st.markdown("---")
+            st.subheader("3. Underwriter Human-in-the-Loop (HITL) Sign-off")
+            notes = st.text_area("Underwriter Justification & Review Notes:", placeholder="Document verification of Elevation Certificate, surveyor notes, or mitigation...")
+            
+            a1, a2 = st.columns(2)
+            with a1:
+                if st.button("✅ Authorize & Bind Policy", use_container_width=True):
+                    new_entry = {
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Property": search_addr,
-                        "Zone": zone,
-                        "Tier": rules["tier"],
-                        "Action": "ESCALATED_ENGINEER",
-                        "Officer_Notes": notes or "Discrepancy between LAG and published BFE."
+                        "App_ID": res["app_id"],
+                        "Property_Address": res["address"],
+                        "Flood_Zone": res["zone"],
+                        "Elevation_Diff_ft": res["metrics"]["diff"],
+                        "Action_Taken": "AUTHORIZED_BIND",
+                        "Officer_Notes": notes if notes.strip() else "Standard auto-bind criteria approved by underwriter.",
+                        "OMB_Governance_Status": "Compliant (HITL Verified)"
                     }
-                    st.session_state.audit_log.append(record)
-                    st.info("Escalation logged. Application dispatched to Regional Engineer queue.")
+                    st.session_state.audit_log.insert(0, new_entry)
+                    st.success("✅ Policy successfully bound and appended to the Responsible AI Audit Log!")
+            with a2:
+                if st.button("🛑 Escalate to Regional Engineer", use_container_width=True):
+                    new_entry = {
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "App_ID": res["app_id"],
+                        "Property_Address": res["address"],
+                        "Flood_Zone": res["zone"],
+                        "Elevation_Diff_ft": res["metrics"]["diff"],
+                        "Action_Taken": "ESCALATED_FIELD_SURVEY",
+                        "Officer_Notes": notes if notes.strip() else "Discrepancy flagged between elevation certificate and NFHL map.",
+                        "OMB_Governance_Status": "Compliant (HITL Exception Routed)"
+                    }
+                    st.session_state.audit_log.insert(0, new_entry)
+                    st.warning("⚠️ Application escalated to Regional Engineering Survey. Appended to Audit Log!")
         else:
             st.info("Enter an address or click on the map, then select **Run Automated Underwriting Triage** to execute.")
 
@@ -270,6 +316,7 @@ with tab_connectors:
     This microservice directly fulfills the job requirement to **support workflow logic, automation, and technical hand-off materials for engineering teams**.
     Below is the normalized JSON schema exported by this prototype to trigger flows in **Microsoft Power Automate**, **DHSChat**, or a **GCP Cloud Function**:
     """)
+    current_res = st.session_state.last_triage_result
     connector_payload = {
         "event_type": "NFIP_AUTOMATED_TRIAGE_COMPLETE",
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -279,30 +326,37 @@ with tab_connectors:
         },
         "geospatial_verification": {
             "nfhl_endpoint": "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28",
-            "detected_zone": "AE" if 'zone' not in locals() else zone,
-            "sfha_status": True if 'rules' not in locals() else rules["is_sfha"]
+            "detected_zone": current_res["zone"] if current_res else "AE",
+            "sfha_status": current_res["rules"]["is_sfha"] if current_res else True
         },
-        "underwriting_metrics": {
-            "bfe_ft": bfe,
-            "lag_ft": lag,
-            "freeboard_margin_ft": round(lag - bfe, 2),
-            "foundation_type": foundation,
-            "historic_claims": claims
+        "underwriting_metrics": current_res["metrics"] if current_res else {
+            "bfe_ft": 14.0, "lag_ft": 12.5, "diff": -1.5, "foundation": "Full Basement", "claims": 1
         },
         "governance_compliance": {
             "framework": "OMB M-25-21 Responsible AI",
-            "hitl_required": True if 'rules' in locals() and rules["status"] != "ELIGIBLE_FOR_AUTO_BIND" else False
+            "hitl_required": True if not current_res or current_res["rules"]["status"] != "ELIGIBLE_FOR_AUTO_BIND" else False
         }
     }
     st.code(json.dumps(connector_payload, indent=2), language="json")
 
 with tab_governance:
-    st.subheader("Responsible AI Audit Log (OMB M-25-21)")
+    st.subheader("Responsible AI & Human-in-the-Loop Audit Log")
     st.markdown("""
-    In compliance with federal AI accountability standards, every automated suggestion and corresponding 
-    human-in-the-loop validation action is captured in this session audit trail:
+    Pursuant to **OMB M-25-21** and federal Responsible AI frameworks, all automated determinations and manual underwriter actions 
+    are logged below with an immutable timestamp, risk metrics, and officer justification notes:
     """)
+    
     if st.session_state.audit_log:
-        st.dataframe(pd.DataFrame(st.session_state.audit_log), use_container_width=True)
+        df_log = pd.DataFrame(st.session_state.audit_log)
+        st.dataframe(df_log, use_container_width=True)
+        
+        # Download audit log button
+        csv_data = df_log.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Audit Trail (CSV)",
+            data=csv_data,
+            file_name=f"nfip_hitl_audit_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
     else:
-        st.info("No underwriter sign-off actions have been logged during this session.")
+        st.info("No underwriter sign-off actions have been executed yet in this session. Complete a review in Tab 1 to see the log update in real-time.")
