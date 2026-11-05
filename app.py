@@ -30,28 +30,34 @@ if "last_triage_result" not in st.session_state:
 # -----------------------------------------------------------------------------
 # GEOCODING & FEMA NFHL GIS QUERY ENGINE
 # -----------------------------------------------------------------------------
-def geocode_address(address_str: str) -> Tuple[float, float]:
-    """Geocodes text address to lat/lon using public Nominatim endpoint."""
+def geocode_address(address_str: str) -> Tuple[float, float, bool]:
+    """Geocodes text address to lat/lon using Nominatim."""
+    if not address_str or not address_str.strip():
+        return st.session_state.marker_lat, st.session_state.marker_lon, False
     try:
         url = "https://nominatim.openstreetmap.org/search"
-        headers = {"User-Agent": "FEMA-Innovation-Prototype/1.0"}
-        params = {"q": address_str, "format": "json", "limit": 1}
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        if resp.status_code == 200 and resp.json():
-            data = resp.json()[0]
-            return float(data["lat"]), float(data["lon"])
+        headers = {"User-Agent": "FEMA-NFIP-Modernization-Prototype-App/2.0"}
+        params = {"q": address_str.strip(), "format": "json", "limit": 1}
+        resp = requests.get(url, params=params, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                return float(data[0]["lat"]), float(data[0]["lon"]), True
     except Exception:
         pass
-    return st.session_state.marker_lat, st.session_state.marker_lon
+    return st.session_state.marker_lat, st.session_state.marker_lon, False
 
-def update_address_location():
-    """Callback triggered whenever user edits the address and presses Enter."""
-    new_addr = st.session_state.address_input_field
+def on_address_change():
+    """Triggered directly when user enters a new address and presses Enter."""
+    new_addr = st.session_state.prop_address_input
     if new_addr and new_addr.strip():
-        new_lat, new_lon = geocode_address(new_addr.strip())
-        st.session_state.marker_lat = new_lat
-        st.session_state.marker_lon = new_lon
-        st.session_state.target_address = new_addr.strip()
+        lat, lon, success = geocode_address(new_addr.strip())
+        if success:
+            st.session_state.marker_lat = lat
+            st.session_state.marker_lon = lon
+            st.session_state.target_address = new_addr.strip()
+            # Clear previous memo so user knows to run triage on new address
+            st.session_state.last_triage_result = None
 
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
     """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
@@ -177,23 +183,16 @@ with tab_ops:
     with col_input:
         st.subheader("1. Property Geospatial & Building Intake")
         
-        # Address Input with Enter Key & Button Auto-Geocode
-        addr_col1, addr_col2 = st.columns([4, 1])
-        with addr_col1:
-            st.text_input(
-                "Property Address (Type address and press Enter):",
-                value=st.session_state.target_address,
-                key="address_input_field",
-                on_change=update_address_location
-            )
-        with addr_col2:
-            st.write("")
-            st.write("")
-            if st.button("📍 Find", use_container_width=True):
-                update_address_location()
-                st.rerun()
+        # Single responsive address field triggering on Enter
+        st.text_input(
+            "Property Address:",
+            value=st.session_state.target_address,
+            key="prop_address_input",
+            on_change=on_address_change,
+            help="Type a street address, city, and state, then press Enter."
+        )
 
-        # Map display with styled hover tooltip
+        # Dynamic folium map forced to re-render when marker coordinates update
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
         
         tooltip_html = f"""
@@ -219,8 +218,11 @@ with tab_ops:
             icon=folium.Icon(color="red", icon="home", prefix="fa")
         ).add_to(m)
         
+        # Unique key forces Streamlit to rebuild iframe when coordinates change
+        map_key = f"map_render_{st.session_state.marker_lat:.4f}_{st.session_state.marker_lon:.4f}"
         st_folium(
             m,
+            key=map_key,
             height=280,
             use_container_width=True,
             returned_objects=[]
@@ -312,7 +314,7 @@ with tab_ops:
                     st.session_state.audit_log.insert(0, new_entry)
                     st.warning("⚠️ Application escalated to Regional Engineering Survey. Appended to Audit Log!")
         else:
-            st.info("Enter a property address on the left, then click **Run Automated Underwriting Triage** to evaluate.")
+            st.info("Enter a property address on the left and press Enter, then click **Run Automated Underwriting Triage** to evaluate.")
 
 with tab_connectors:
     st.subheader("Power Platform & Enterprise Low-Code Hand-Off")
