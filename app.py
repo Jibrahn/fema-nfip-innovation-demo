@@ -36,13 +36,22 @@ def geocode_address(address_str: str) -> Tuple[float, float]:
         url = "https://nominatim.openstreetmap.org/search"
         headers = {"User-Agent": "FEMA-Innovation-Prototype/1.0"}
         params = {"q": address_str, "format": "json", "limit": 1}
-        resp = requests.get(url, params=params, headers=headers, timeout=4)
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
         if resp.status_code == 200 and resp.json():
             data = resp.json()[0]
             return float(data["lat"]), float(data["lon"])
     except Exception:
         pass
     return st.session_state.marker_lat, st.session_state.marker_lon
+
+def update_address_location():
+    """Callback triggered whenever user edits the address and presses Enter."""
+    new_addr = st.session_state.address_input_field
+    if new_addr and new_addr.strip():
+        new_lat, new_lon = geocode_address(new_addr.strip())
+        st.session_state.marker_lat = new_lat
+        st.session_state.marker_lon = new_lon
+        st.session_state.target_address = new_addr.strip()
 
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
     """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
@@ -168,14 +177,21 @@ with tab_ops:
     with col_input:
         st.subheader("1. Property Geospatial & Building Intake")
         
-        # Address & Geocode Search
-        search_addr = st.text_input("Property Address:", value=st.session_state.target_address)
-        # if st.button("📍 Geocode & Center Address"):
-        #     new_lat, new_lon = geocode_address(search_addr)
-        #     st.session_state.marker_lat = new_lat
-        #     st.session_state.marker_lon = new_lon
-        #     st.session_state.target_address = search_addr
-        #     st.rerun()
+        # Address Input with Enter Key & Button Auto-Geocode
+        addr_col1, addr_col2 = st.columns([4, 1])
+        with addr_col1:
+            st.text_input(
+                "Property Address (Type address and press Enter):",
+                value=st.session_state.target_address,
+                key="address_input_field",
+                on_change=update_address_location
+            )
+        with addr_col2:
+            st.write("")
+            st.write("")
+            if st.button("📍 Find", use_container_width=True):
+                update_address_location()
+                st.rerun()
 
         # Map display with styled hover tooltip
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
@@ -210,14 +226,6 @@ with tab_ops:
             returned_objects=[]
         )
 
-        c_lat, c_lon = st.columns(2)
-        # manual_lat = c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f")
-        # manual_lon = c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f")
-        
-        # if manual_lat != st.session_state.marker_lat or manual_lon != st.session_state.marker_lon:
-        #     st.session_state.marker_lat = manual_lat
-        #     st.session_state.marker_lon = manual_lon
-
         st.markdown("#### Building & Elevation Certificate Details")
         c1, c2 = st.columns(2)
         bfe = c1.number_input("Base Flood Elevation (BFE ft)", value=14.0, step=0.5)
@@ -238,11 +246,11 @@ with tab_ops:
             with st.spinner("Calling FEMA NFHL REST Layer 28 & evaluating business rules..."):
                 zone, subtype, raw_gis = query_fema_nfhl(st.session_state.marker_lat, st.session_state.marker_lon)
                 rules = evaluate_underwriting(zone, bfe, lag, claims, foundation, occupancy)
-                memo = generate_agentic_memo("NFIP-APP-2026-8842", search_addr, zone, subtype, rules, foundation, occupancy)
+                memo = generate_agentic_memo("NFIP-APP-2026-8842", st.session_state.target_address, zone, subtype, rules, foundation, occupancy)
                 
                 st.session_state.last_triage_result = {
                     "app_id": "NFIP-APP-2026-8842",
-                    "address": search_addr,
+                    "address": st.session_state.target_address,
                     "zone": zone,
                     "subtype": subtype,
                     "rules": rules,
@@ -304,11 +312,12 @@ with tab_ops:
                     st.session_state.audit_log.insert(0, new_entry)
                     st.warning("⚠️ Application escalated to Regional Engineering Survey. Appended to Audit Log!")
         else:
-            st.info("Enter an address or coordinate set on the left, then click **Run Automated Underwriting Triage** to evaluate.")
+            st.info("Enter a property address on the left, then click **Run Automated Underwriting Triage** to evaluate.")
 
 with tab_connectors:
     st.subheader("Power Platform & Enterprise Low-Code Hand-Off")
     st.markdown("""
+    This microservice directly fulfills the job requirement to **support workflow logic, automation, and technical hand-off materials for engineering teams**.
     Below is the normalized JSON schema exported by this prototype to trigger flows in **Microsoft Power Automate**, **DHSChat**, or a **GCP Cloud Function**:
     """)
     current_res = st.session_state.last_triage_result
