@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import json
+import urllib.parse
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, Tuple
@@ -23,42 +24,75 @@ if "marker_lat" not in st.session_state:
 if "marker_lon" not in st.session_state:
     st.session_state.marker_lon = -87.7000
 if "target_address" not in st.session_state:
-    st.session_state.target_address = "124 Ocean Breeze Way, Gulf Shores, AL"
+    st.session_state.target_address = "124 Ocean Breeze Way, Gulf Shores, AL 36542"
+if "geocode_error" not in st.session_state:
+    st.session_state.geocode_error = None
 if "last_triage_result" not in st.session_state:
     st.session_state.last_triage_result = None
 
 # -----------------------------------------------------------------------------
-# GEOCODING & FEMA NFHL GIS QUERY ENGINE
+# GEOCODING ENGINE: US CENSUS BUREAU + NOMINATIM FALLBACK
 # -----------------------------------------------------------------------------
-def geocode_address(address_str: str) -> Tuple[float, float, bool]:
-    """Geocodes text address to lat/lon using Nominatim."""
-    if not address_str or not address_str.strip():
-        return st.session_state.marker_lat, st.session_state.marker_lon, False
+def geocode_address(address_str: str) -> Tuple[float, float, bool, str]:
+    """
+    Geocodes text address using federal US Census Bureau API with Nominatim fallback.
+    Returns: (lat, lon, success_bool, status_message)
+    """
+    clean_addr = address_str.strip()
+    if not clean_addr:
+        return st.session_state.marker_lat, st.session_state.marker_lon, False, "Address input cannot be blank."
+
+    # 1. Primary Federal Geocoder: US Census Bureau (Best for formatted US addresses)
     try:
-        url = "https://nominatim.openstreetmap.org/search"
-        headers = {"User-Agent": "FEMA-NFIP-Modernization-Prototype-App/2.0"}
-        params = {"q": address_str.strip(), "format": "json", "limit": 1}
-        resp = requests.get(url, params=params, headers=headers, timeout=6)
+        census_url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+        params = {
+            "address": clean_addr,
+            "benchmark": "Public_AR_Current",
+            "format": "json"
+        }
+        resp = requests.get(census_url, params=params, timeout=5)
         if resp.status_code == 200:
-            data = resp.json()
-            if data and len(data) > 0:
-                return float(data[0]["lat"]), float(data[0]["lon"]), True
+            matches = resp.json().get("result", {}).get("addressMatches", [])
+            if matches:
+                coords = matches[0]["coordinates"]
+                return float(coords["y"]), float(coords["x"]), True, "Successfully matched via US Census Bureau Geocoding Service."
     except Exception:
         pass
-    return st.session_state.marker_lat, st.session_state.marker_lon, False
+
+    # 2. Secondary Geocoder: OpenStreetMap Nominatim
+    try:
+        nom_url = "https://nominatim.openstreetmap.org/search"
+        headers = {"User-Agent": "FEMA-NFIP-Innovation-Triage-App/2.1 (contact: fema-demo@dhs.gov)"}
+        params = {"q": clean_addr, "format": "json", "limit": 1, "countrycodes": "us"}
+        resp = requests.get(nom_url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200 and resp.json():
+            item = resp.json()[0]
+            return float(item["lat"]), float(item["lon"]), True, "Successfully matched via OpenStreetMap Geocoding Service."
+    except Exception as e:
+        return st.session_state.marker_lat, st.session_state.marker_lon, False, f"Geocoding service error: {str(e)}"
+
+    return st.session_state.marker_lat, st.session_state.marker_lon, False, (
+        f"Unable to locate '{clean_addr}'. Please verify the format: "
+        "'123 Main St, City, ST 12345'."
+    )
 
 def on_address_change():
     """Triggered directly when user enters a new address and presses Enter."""
     new_addr = st.session_state.prop_address_input
     if new_addr and new_addr.strip():
-        lat, lon, success = geocode_address(new_addr.strip())
+        lat, lon, success, msg = geocode_address(new_addr.strip())
         if success:
             st.session_state.marker_lat = lat
             st.session_state.marker_lon = lon
             st.session_state.target_address = new_addr.strip()
-            # Clear previous memo so user knows to run triage on new address
+            st.session_state.geocode_error = None
             st.session_state.last_triage_result = None
+        else:
+            st.session_state.geocode_error = msg
 
+# -----------------------------------------------------------------------------
+# FEMA NFHL GIS QUERY ENGINE
+# -----------------------------------------------------------------------------
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
     """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
     url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
@@ -183,14 +217,19 @@ with tab_ops:
     with col_input:
         st.subheader("1. Property Geospatial & Building Intake")
         
-        # Single responsive address field triggering on Enter
+        # Address input with explicit format guidance
         st.text_input(
-            "Property Address:",
+            "Property Address (Street, City, State ZIP):",
             value=st.session_state.target_address,
             key="prop_address_input",
             on_change=on_address_change,
-            help="Type a street address, city, and state, then press Enter."
+            placeholder="e.g., 100 Main St, Lumberton, NC 28358"
         )
+        st.caption("💡 *Type a standard US street address, city, state, and ZIP, then press **Enter** to update coordinates.*")
+
+        # Explicit Geocoding Error Banner
+        if st.session_state.geocode_error:
+            st.error(f"⚠️ {st.session_state.geocode_error}")
 
         # Dynamic folium map forced to re-render when marker coordinates update
         m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
@@ -218,26 +257,44 @@ with tab_ops:
             icon=folium.Icon(color="red", icon="home", prefix="fa")
         ).add_to(m)
         
-        # Unique key forces Streamlit to rebuild iframe when coordinates change
         map_key = f"map_render_{st.session_state.marker_lat:.4f}_{st.session_state.marker_lon:.4f}"
         st_folium(
             m,
             key=map_key,
-            height=280,
+            height=260,
             use_container_width=True,
             returned_objects=[]
         )
 
-        st.markdown("#### Building & Elevation Certificate Details")
+        st.markdown("#### Elevation Certificate & Policy Details")
+        st.caption("📄 *Transcribed from FEMA Elevation Certificate (Form 086-0-33) Sections B & C:*")
+        
         c1, c2 = st.columns(2)
-        bfe = c1.number_input("Base Flood Elevation (BFE ft)", value=14.0, step=0.5)
-        lag = c2.number_input("Lowest Adjacent Grade (LAG ft)", value=12.5, step=0.5)
+        bfe = c1.number_input(
+            "Base Flood Elevation (BFE in ft)",
+            value=14.0,
+            step=0.5,
+            help="From FIRM or Elevation Certificate Section B. The computed flood level for a 1% annual chance event."
+        )
+        lag = c2.number_input(
+            "Lowest Adjacent Grade (LAG in ft)",
+            value=12.5,
+            step=0.5,
+            help="From Elevation Certificate Section C2.f. Elevation of the lowest ground touching the building foundation."
+        )
 
         c3, c4 = st.columns(2)
-        foundation = c3.selectbox("Foundation Type", ["Slab on Grade", "Crawlspace (Elevated)", "Full Basement", "Enclosure (Sub-grade crawlspace)", "Piles / Stilts"])
-        occupancy = c4.selectbox("Occupancy Category", ["Single Family", "2-4 Family", "Commercial / Other Non-Residential", "Manufactured Home"])
+        foundation = c3.selectbox(
+            "Foundation Type", 
+            ["Slab on Grade", "Crawlspace (Elevated)", "Full Basement", "Enclosure (Sub-grade crawlspace)", "Piles / Stilts"],
+            help="Elevation Certificate Section A7/A8 building diagram description."
+        )
+        occupancy = c4.selectbox(
+            "Occupancy Category", 
+            ["Single Family", "2-4 Family", "Commercial / Other Non-Residential", "Manufactured Home"]
+        )
 
-        claims = st.number_input("Historic Prior Claims Count", min_value=0, max_value=20, value=1)
+        claims = st.number_input("Historic Prior Claims Count", min_value=0, max_value=20, value=1, help="Prior NFIP loss history for parcel.")
 
         run_btn = st.button("Run Automated Underwriting Triage", type="primary", use_container_width=True)
 
