@@ -14,18 +14,36 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# SESSION STATE INITIALIZATION (AUDIT TRAIL)
+# SESSION STATE INITIALIZATION
 # -----------------------------------------------------------------------------
 if "audit_log" not in st.session_state:
     st.session_state.audit_log = []
+if "marker_lat" not in st.session_state:
+    st.session_state.marker_lat = 30.2460
+if "marker_lon" not in st.session_state:
+    st.session_state.marker_lon = -87.7000
+if "target_address" not in st.session_state:
+    st.session_state.target_address = "124 Ocean Breeze Way, Gulf Shores, AL"
 
 # -----------------------------------------------------------------------------
-# FEMA NFHL GIS QUERY ENGINE
+# GEOCODING & FEMA NFHL GIS QUERY ENGINE
 # -----------------------------------------------------------------------------
+def geocode_address(address_str: str) -> Tuple[float, float]:
+    """Geocodes text address to lat/lon using public Nominatim endpoint."""
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        headers = {"User-Agent": "FEMA-Innovation-Prototype/1.0"}
+        params = {"q": address_str, "format": "json", "limit": 1}
+        resp = requests.get(url, params=params, headers=headers, timeout=4)
+        if resp.status_code == 200 and resp.json():
+            data = resp.json()[0]
+            return float(data["lat"]), float(data["lon"])
+    except Exception:
+        pass
+    return st.session_state.marker_lat, st.session_state.marker_lon
+
 def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Queries FEMA National Flood Hazard Layer (NFHL) ArcGIS REST API (Layer 28).
-    """
+    """Queries FEMA NFHL ArcGIS REST API (Layer 28: Flood Hazard Zones)."""
     url = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
     params = {
         "geometry": f"{lon},{lat}",
@@ -35,25 +53,23 @@ def query_fema_nfhl(lat: float, lon: float) -> Tuple[str, str, Dict[str, Any]]:
         "returnGeometry": "false",
         "f": "json"
     }
-    raw_response = {}
     try:
         resp = requests.get(url, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            raw_response = data
             if data.get("features"):
                 attr = data["features"][0].get("attributes", {})
                 zone = attr.get("FLD_ZONE", "X")
                 subtype = attr.get("ZONE_SUBTY", "Area of Minimal Flood Hazard")
-                return zone, subtype, raw_response
+                return zone, subtype, data
         return "X", "Standard / Area of Minimal Flood Hazard", {"status": "default_fallback"}
     except Exception as e:
-        return "AE", "1% Annual Chance Flood Hazard (Offline Fallback)", {"error": str(e)}
+        return "AE", "1% Annual Chance Flood Hazard (Offline Simulation)", {"error": str(e)}
 
 # -----------------------------------------------------------------------------
 # DETERMINISTIC UNDERWRITING RULES ENGINE
 # -----------------------------------------------------------------------------
-def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int) -> Dict[str, Any]:
+def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int, foundation: str, occupancy: str) -> Dict[str, Any]:
     elev_diff = lag - bfe
     flags = []
     
@@ -61,16 +77,22 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int) -> Dic
     is_sfha = any(zone.upper().startswith(z) for z in sfha_zones)
     
     if is_sfha:
-        flags.append(f"Located in Special Flood Hazard Area (SFHA Zone {zone})")
-    if elev_diff < 0:
-        flags.append(f"Sub-grade exposure: Lowest Adjacent Grade is {abs(elev_diff):.2f} ft below BFE")
-    if claims >= 2:
-        flags.append(f"Severe Repetitive Loss candidate: {claims} prior claims recorded")
-    elif claims == 1:
-        flags.append("Single prior claim on record")
+        flags.append(f"Structure located in Special Flood Hazard Area (SFHA Zone {zone})")
         
-    if claims >= 2 or elev_diff < -2.0:
-        tier = "Tier 3: Mandatory Senior Underwriter Review (HITL)"
+    if elev_diff < 0:
+        flags.append(f"Sub-grade exposure: Lowest Grade is {abs(elev_diff):.2f} ft below BFE (Negative Freeboard)")
+        
+    if foundation in ["Full Basement", "Enclosure (Sub-grade crawlspace)"] and is_sfha:
+        flags.append(f"High-consequence foundation risk: {foundation} in SFHA")
+        
+    if claims >= 2:
+        flags.append(f"Severe Repetitive Loss (SRL) candidate: {claims} historic claims recorded")
+    elif claims == 1:
+        flags.append("Single loss history recorded on parcel")
+
+    # Workflow Triage Categorization
+    if claims >= 2 or elev_diff < -2.0 or (is_sfha and "Basement" in foundation):
+        tier = "Tier 3: Mandatory Senior Underwriter Review (HITL Exception)"
         status = "REQUIRES_SENIOR_REVIEW"
         color = "red"
     elif is_sfha or elev_diff < 0 or claims == 1:
@@ -78,7 +100,7 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int) -> Dic
         status = "PENDING_VERIFICATION"
         color = "orange"
     else:
-        tier = "Tier 1: Accelerated Auto-Bind Eligible"
+        tier = "Tier 1: Accelerated Straight-Through Auto-Bind"
         status = "ELIGIBLE_FOR_AUTO_BIND"
         color = "green"
         
@@ -92,188 +114,195 @@ def evaluate_underwriting(zone: str, bfe: float, lag: float, claims: int) -> Dic
     }
 
 # -----------------------------------------------------------------------------
-# AGENTIC REASONING & SYNTHESIS
+# AGENTIC MEMO SYNTHESIZER
 # -----------------------------------------------------------------------------
-def run_agentic_triage(app_id: str, address: str, zone: str, subtype: str, rules: Dict[str, Any], api_key: str = None) -> str:
-    """
-    Synthesizes risk memo using structured reasoning, conforming to OMB M-24-45 / M-25-21 standards.
-    """
-    if api_key:
-        # Example hook for live enterprise LLM endpoints (e.g., DHSChat, Azure OpenAI, or Gemini)
-        try:
-            prompt = f"""
-            You are the FEMA NFIP Innovation Underwriting Agent. Synthesize an official underwriting review memo:
-            Property: {address}
-            Determined Zone: {zone} ({subtype})
-            Elevation Differential (LAG - BFE): {rules['elevation_diff']} ft
-            Risk Flags: {json.dumps(rules['flags'])}
-            Assigned Rule Tier: {rules['tier']}
-            Adhere strictly to Responsible AI guardrails. State whether automated bind is permissible.
-            """
-            # Implementation can invoke requests.post() against an enterprise gateway
-        except Exception:
-            pass
-
-    # Built-in High-Fidelity Synthesizer with policy citation
+def generate_agentic_memo(app_id: str, address: str, zone: str, subtype: str, rules: Dict[str, Any], foundation: str, occupancy: str) -> str:
+    flag_list = "\n".join([f"  - ⚠️ **{f}**" for f in rules["flags"]]) if rules["flags"] else "  - ✅ No adverse risk indicators found."
+    
     actionable_recs = []
     if rules["status"] == "ELIGIBLE_FOR_AUTO_BIND":
-        actionable_recs.append("Eligible for accelerated straight-through processing under NFIP Fast-Track Guidelines.")
+        actionable_recs.append("Straight-Through Processing: Issue Standard Flood Insurance Policy (SFIP) policy binder.")
     elif rules["status"] == "PENDING_VERIFICATION":
-        actionable_recs.append("Validate Elevation Certificate Section C (Building Elevations) before rating.")
-        actionable_recs.append("Cross-reference community participation status in FEMA Community Status Book.")
+        actionable_recs.append("Verify building photos and Elevation Certificate Section C2 (Finished Construction).")
+        actionable_recs.append("Confirm flood proofing or hydrostatic flood vents for foundation enclosure.")
     else:
-        actionable_recs.append("Requires mandatory manual review by a certified NFIP Senior Underwriter.")
-        actionable_recs.append("Order structural foundation and sub-grade crawlspace audit.")
+        actionable_recs.append("Freeze automated binder: Route parcel to FEMA Regional Specialty Underwriting Unit.")
+        actionable_recs.append("Initiate repetitive loss mitigation counseling protocol.")
 
-    rec_bullets = "\n".join([f"  1. {r}" for r in actionable_recs])
-    flag_bullets = "\n".join([f"  - ⚠️ **{f}**" for f in rules["flags"]]) if rules["flags"] else "  - ✅ No adverse risk indicators found."
+    rec_list = "\n".join([f"  1. {r}" for r in actionable_recs])
 
-    memo = f"""### 📋 Official NFIP Underwriting Triage Memo
+    return f"""### 📋 NFIP Underwriting Triage Memo
 **Application Reference:** `{app_id}`  
 **Insured Property:** {address}  
-**Flood Zone Classification:** **{zone}** — *{subtype}*  
-**SFHA Status:** {'Designated Special Flood Hazard Area (Mandatory Insurance Purchase Required)' if rules['is_sfha'] else 'Non-Special Flood Hazard Area'}
+**Structure Profile:** {occupancy} | Foundation: {foundation}  
+**Flood Zone Classification:** **{zone}** ({subtype}) — *{'SFHA Mandatory Purchase' if rules['is_sfha'] else 'Non-Special Flood Hazard Area'}*
 
 ---
-#### 1. Risk Vector Analysis
+#### 1. Technical Risk & Elevation Analysis
 - **Elevation Differential ($LAG - BFE$):** `{rules['elevation_diff']} ft`
-{flag_bullets}
+{flag_list}
 
 #### 2. Agentic Routing & Next Best Actions
-- **Triage Determination:** **{rules['status']}**
-- **Routing Assignment:** `{rules['tier']}`
-- **Prescribed Operational Directives:**
-{rec_bullets}
+- **Triage Result:** **{rules['status']}**
+- **Assigned Operational Track:** `{rules['tier']}`
+- **Prescribed Operational Steps:**
+{rec_list}
 
 ---
-> 🔒 **Responsible AI & Governance Verification (OMB M-25-21):**  
-> *This decision support memo was synthesized using a hybrid deterministic-agentic pipeline. System confidence score: **98.4%**. Final binding authority for Tier 2/3 risks remains strictly with certified human officers.*
+> 🔒 **Responsible AI / Human-in-the-Loop Governance (OMB M-25-21):**  
+> *This decision-support memo was synthesized automatically. Straight-through binding is only authorized for Tier 1. All Tier 2/3 decisions require explicit sign-off from an authorized human underwriter.*
 """
-    return memo
 
 # -----------------------------------------------------------------------------
-# UI LAYOUT
+# STREAMLIT UI
 # -----------------------------------------------------------------------------
 st.title("🌊 FEMA NFIP - Intelligent Triage & Map Modernization Assistant")
-st.markdown("**FEMA Innovation Branch Technical Prototype** | AI Agent Workflow Modernization & Geospatial Validation")
+st.caption("FEMA Innovation Branch Technical Prototype | Low-Code / Pro-Code Hybrid Decision Support")
 
-scenarios = {
-    "Custom Property Entry": None,
-    "Scenario A: Gulf Shores, AL (High Risk Coastal VE / Repetitive Loss)": {
-        "address": "124 Ocean Breeze Way, Gulf Shores, AL",
-        "lat": 30.2460, "lon": -87.7000,
-        "bfe": 14.0, "lag": 11.5, "claims": 3, "coverage": 250000
-    },
-    "Scenario B: Roanoke, VA (Inland Zone X / Minimal Risk)": {
-        "address": "45 Highland Ridge Rd, Roanoke, VA",
-        "lat": 37.2700, "lon": -79.9410,
-        "bfe": 0.0, "lag": 5.0, "claims": 0, "coverage": 150000
-    },
-    "Scenario C: Lumberton, NC (Riverine SFHA Zone AE / Single Loss)": {
-        "address": "810 Riverfront Dr, Lumberton, NC",
-        "lat": 34.6180, "lon": -79.0080,
-        "bfe": 112.0, "lag": 111.0, "claims": 1, "coverage": 200000
-    }
-}
+tab_ops, tab_connectors, tab_governance = st.tabs(["🚀 Underwriting Triage Workbench", "🔌 Power Platform / API Payload", "📜 Responsible AI Audit Log"])
 
-tab_triage, tab_integration, tab_audit = st.tabs(["🚀 Operational Triage", "🔌 Enterprise & Power Platform Integration", "📜 HITL Compliance Audit Log"])
+with tab_ops:
+    col_input, col_results = st.columns([1, 1])
 
-with tab_triage:
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.subheader("1. Ingestion & GIS Coordinates")
-        selected_scen = st.selectbox("Select Benchmark Case:", list(scenarios.keys()))
+    with col_input:
+        st.subheader("1. Property Geospatial & Building Intake")
         
-        if selected_scen != "Custom Property Entry":
-            s_data = scenarios[selected_scen]
-            address = st.text_input("Property Address", s_data["address"])
-            c_lat, c_lon = st.columns(2)
-            lat = c_lat.number_input("Latitude", value=s_data["lat"], format="%.4f")
-            lon = c_lon.number_input("Longitude", value=s_data["lon"], format="%.4f")
-            bfe = st.number_input("Base Flood Elevation (BFE ft)", value=float(s_data["bfe"]))
-            lag = st.number_input("Lowest Adjacent Grade (LAG ft)", value=float(s_data["lag"]))
-            claims = st.number_input("Prior Claims Count", value=int(s_data["claims"]), min_value=0)
-        else:
-            address = st.text_input("Property Address", "100 Innovation Way, Washington, DC")
-            c_lat, c_lon = st.columns(2)
-            lat = c_lat.number_input("Latitude", value=38.8951, format="%.4f")
-            lon = c_lon.number_input("Longitude", value=-77.0364, format="%.4f")
-            bfe = st.number_input("Base Flood Elevation (BFE ft)", value=10.0)
-            lag = st.number_input("Lowest Adjacent Grade (LAG ft)", value=12.0)
-            claims = st.number_input("Prior Claims Count", value=0, min_value=0)
+        # Address & Geocode Search
+        search_addr = st.text_input("Property Address (Type and press Enter to geocode):", value=st.session_state.target_address)
+        if st.button("📍 Geocode Address"):
+            new_lat, new_lon = geocode_address(search_addr)
+            st.session_state.marker_lat = new_lat
+            st.session_state.marker_lon = new_lon
+            st.session_state.target_address = search_addr
+            st.rerun()
 
-        # Interactive Geospatial Preview
-        m = folium.Map(location=[lat, lon], zoom_start=14)
-        folium.Marker([lat, lon], popup=address, tooltip="Target Property").add_to(m)
-        st_folium(m, height=220, use_container_width=True)
+        st.caption("💡 *You can also click anywhere directly on the map below to move the pin and update coordinates:*")
+        
+        # Interactive Folium Map with Click Listener
+        m = folium.Map(location=[st.session_state.marker_lat, st.session_state.marker_lon], zoom_start=15)
+        folium.Marker(
+            [st.session_state.marker_lat, st.session_state.marker_lon],
+            tooltip="Inspection Target",
+            icon=folium.Icon(color="red", icon="home")
+        ).add_to(m)
+        
+        map_interaction = st_folium(m, height=260, use_container_width=True)
+        
+        # Check if user clicked on map
+        if map_interaction and map_interaction.get("last_clicked"):
+            click_lat = round(map_interaction["last_clicked"]["lat"], 4)
+            click_lon = round(map_interaction["last_clicked"]["lng"], 4)
+            if click_lat != st.session_state.marker_lat or click_lon != st.session_state.marker_lon:
+                st.session_state.marker_lat = click_lat
+                st.session_state.marker_lon = click_lon
+                st.rerun()
 
-        run_btn = st.button("Execute Automated Underwriting Triage", type="primary", use_container_width=True)
+        c_lat, c_lon = st.columns(2)
+        c_lat.number_input("Target Latitude", value=st.session_state.marker_lat, format="%.4f", key="manual_lat")
+        c_lon.number_input("Target Longitude", value=st.session_state.marker_lon, format="%.4f", key="manual_lon")
 
-    with col2:
-        st.subheader("2. Real-Time Evaluation & Memo")
+        st.markdown("#### Building & Elevation Certificate Details")
+        c1, c2 = st.columns(2)
+        bfe = c1.number_input("Base Flood Elevation (BFE ft)", value=14.0, step=0.5)
+        lag = c2.number_input("Lowest Adjacent Grade (LAG ft)", value=12.5, step=0.5)
+
+        c3, c4 = st.columns(2)
+        foundation = c3.selectbox("Foundation Type", ["Slab on Grade", "Crawlspace (Elevated)", "Full Basement", "Enclosure (Sub-grade crawlspace)", "Piles / Stilts"])
+        occupancy = c4.selectbox("Occupancy Category", ["Single Family", "2-4 Family", "Commercial / Other Non-Residential", "Manufactured Home"])
+
+        claims = st.number_input("Historic Prior Claims Count", min_value=0, max_value=20, value=1)
+
+        run_btn = st.button("Run Automated Underwriting Triage", type="primary", use_container_width=True)
+
+    with col_results:
+        st.subheader("2. Real-Time Triage & Agent Memo")
         if run_btn:
-            with st.spinner("Connecting to FEMA NFHL ArcGIS REST Service..."):
-                zone, subtype, raw_gis = query_fema_nfhl(lat, lon)
-                rules = evaluate_underwriting(zone, bfe, lag, claims)
-                memo = run_agentic_triage("NFIP-APP-8842", address, zone, subtype, rules)
-                
-                # Render Results
+            with st.spinner("Calling FEMA NFHL REST Layer 28 & evaluating business rules..."):
+                zone, subtype, raw_gis = query_fema_nfhl(st.session_state.marker_lat, st.session_state.marker_lon)
+                rules = evaluate_underwriting(zone, bfe, lag, claims, foundation, occupancy)
+                memo = generate_agentic_memo("NFIP-APP-2026-8842", search_addr, zone, subtype, rules, foundation, occupancy)
+
+                # Status Banner
                 if rules["color"] == "red":
-                    st.error(f"**Result:** {rules['tier']}")
+                    st.error(f"**Operational Decision:** {rules['tier']}")
                 elif rules["color"] == "orange":
-                    st.warning(f"**Result:** {rules['tier']}")
+                    st.warning(f"**Operational Decision:** {rules['tier']}")
                 else:
-                    st.success(f"**Result:** {rules['tier']}")
-                    
+                    st.success(f"**Operational Decision:** {rules['tier']}")
+
                 st.markdown(memo)
-                
+
+                # Underwriter Action Box (HITL)
                 st.markdown("---")
-                st.subheader("3. Human-in-the-Loop Decision Gate")
-                underwriter_note = st.text_area("Underwriter Justification / Notes:", placeholder="Add review notes here...")
+                st.subheader("3. Underwriter Human-in-the-Loop Sign-off")
+                notes = st.text_area("Underwriter Justification & Review Notes:", placeholder="Document verification of Elevation Certificate or mitigation factors...")
                 
-                b1, b2 = st.columns(2)
-                if b1.button("✅ Bind & Approve Policy", use_container_width=True):
+                a1, a2 = st.columns(2)
+                if a1.button("✅ Bind & Authorize Coverage", use_container_width=True):
                     record = {
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "address": address,
-                        "zone": zone,
-                        "action": "APPROVED / BOUND",
-                        "notes": underwriter_note or "Automated fast-track approval."
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Property": search_addr,
+                        "Zone": zone,
+                        "Tier": rules["tier"],
+                        "Action": "AUTHORIZED_BIND",
+                        "Officer_Notes": notes or "Auto-bind criteria validated."
                     }
                     st.session_state.audit_log.append(record)
-                    st.success("Policy approved. Recorded to immutable audit log.")
+                    st.success("Binder authorized. Action recorded to compliance audit log.")
                     
-                if b2.button("⚠️ Escalate for Engineering Survey", use_container_width=True):
+                if a2.button("🛑 Escalate to Regional Engineer", use_container_width=True):
                     record = {
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "address": address,
-                        "zone": zone,
-                        "action": "ESCALATED_SURVEY",
-                        "notes": underwriter_note or "Flagged elevation discrepancy."
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Property": search_addr,
+                        "Zone": zone,
+                        "Tier": rules["tier"],
+                        "Action": "ESCALATED_ENGINEER",
+                        "Officer_Notes": notes or "Discrepancy between LAG and published BFE."
                     }
                     st.session_state.audit_log.append(record)
-                    st.info("Dispatched to regional surveyor queue.")
+                    st.info("Escalation logged. Application dispatched to Regional Engineer queue.")
         else:
-            st.info("Select a test benchmark scenario on the left and click **Execute Automated Underwriting Triage**.")
+            st.info("Enter an address or click on the map, then select **Run Automated Underwriting Triage** to execute.")
 
-with tab_integration:
-    st.subheader("Power Platform & Enterprise Low-Code Interoperability")
+with tab_connectors:
+    st.subheader("Power Platform & Enterprise Low-Code Hand-Off")
     st.markdown("""
-    To satisfy the FEMA Innovation Branch mandate of converting prototypes into enterprise solutions, this service emits 
-    standardized schemas consumable by **Power Automate Custom Connectors**, **GCP Vertex AI Agents**, or **DHSChat**.
+    This microservice directly fulfills the job requirement to **support workflow logic, automation, and technical hand-off materials for engineering teams**.
+    Below is the normalized JSON schema exported by this prototype to trigger flows in **Microsoft Power Automate**, **DHSChat**, or a **GCP Cloud Function**:
     """)
-    sample_payload = {
-        "event": "NFIP_TRIAGE_REQUEST",
-        "property_data": {"address": address, "lat": lat, "lon": lon},
-        "elevation_metrics": {"bfe": bfe, "lag": lag, "diff": lag - bfe},
-        "api_endpoint": "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28"
+    connector_payload = {
+        "event_type": "NFIP_AUTOMATED_TRIAGE_COMPLETE",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "applicant_metadata": {
+            "address": st.session_state.target_address,
+            "coordinates": {"lat": st.session_state.marker_lat, "lon": st.session_state.marker_lon}
+        },
+        "geospatial_verification": {
+            "nfhl_endpoint": "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28",
+            "detected_zone": "AE" if 'zone' not in locals() else zone,
+            "sfha_status": True if 'rules' not in locals() else rules["is_sfha"]
+        },
+        "underwriting_metrics": {
+            "bfe_ft": bfe,
+            "lag_ft": lag,
+            "freeboard_margin_ft": round(lag - bfe, 2),
+            "foundation_type": foundation,
+            "historic_claims": claims
+        },
+        "governance_compliance": {
+            "framework": "OMB M-25-21 Responsible AI",
+            "hitl_required": True if 'rules' in locals() and rules["status"] != "ELIGIBLE_FOR_AUTO_BIND" else False
+        }
     }
-    st.code(json.dumps(sample_payload, indent=2), language="json")
+    st.code(json.dumps(connector_payload, indent=2), language="json")
 
-with tab_audit:
-    st.subheader("Responsible AI Audit Trail (OMB M-25-21)")
+with tab_governance:
+    st.subheader("Responsible AI Audit Log (OMB M-25-21)")
+    st.markdown("""
+    In compliance with federal AI accountability standards, every automated suggestion and corresponding 
+    human-in-the-loop validation action is captured in this session audit trail:
+    """)
     if st.session_state.audit_log:
         st.dataframe(pd.DataFrame(st.session_state.audit_log), use_container_width=True)
     else:
-        st.info("No underwriter actions logged in this session yet.")
+        st.info("No underwriter sign-off actions have been logged during this session.")
